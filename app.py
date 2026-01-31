@@ -12,24 +12,27 @@ from src.safety_layer import apply_safety_logic
 from src.recommendation_engine import recommend_routes
 from src.zone_planner import generate_zone_plan
 from src.scenario_engine import simulate_scenario
+from src.failure_detector import detect_system_failure
+from src.scenario_comparator import compare_scenarios
+from src.decision_explainer import explain_decision_change
 
 
-# -------------------------------------------------
+# =================================================
 # APP TITLE
-# -------------------------------------------------
+# =================================================
 st.title("ASTRAGUARD — Intelligent Evacuation Planning System")
 
 
-# -------------------------------------------------
+# =================================================
 # LOAD DATA
-# -------------------------------------------------
+# =================================================
 data_path = "data/demo_flood_routes.csv"
 df = load_data(data_path)
 
 
-# -------------------------------------------------
-# BASIC VISUALIZATION
-# -------------------------------------------------
+# =================================================
+# DATA OVERVIEW
+# =================================================
 st.header("Data Overview")
 
 show_basic_stats(df)
@@ -37,9 +40,9 @@ plot_risk_by_route(df)
 plot_evac_time(df)
 
 
-# -------------------------------------------------
+# =================================================
 # RULE-BASED RANKING
-# -------------------------------------------------
+# =================================================
 st.header("Rule-Based Route Ranking")
 
 ranked_df = rank_routes(df)
@@ -56,9 +59,9 @@ st.write(
 )
 
 
-# -------------------------------------------------
+# =================================================
 # TRAIN ML MODEL
-# -------------------------------------------------
+# =================================================
 st.header("ML Evacuation Time Prediction")
 
 model, mae, r2 = train_evacuation_model(df)
@@ -67,9 +70,9 @@ st.write(f"Mean Absolute Error (minutes): {mae:.2f}")
 st.write(f"R² Score: {r2:.2f}")
 
 
-# -------------------------------------------------
+# =================================================
 # FEATURE IMPORTANCE
-# -------------------------------------------------
+# =================================================
 st.subheader("Why the Model Decides This")
 
 features = [
@@ -87,9 +90,9 @@ st.write("Feature Importance (High → Low):")
 st.write(importance)
 
 
-# -------------------------------------------------
-# SCENARIO SIMULATION CONTROLS (MUST COME FIRST)
-# -------------------------------------------------
+# =================================================
+# SCENARIO SIMULATION CONTROLS
+# =================================================
 st.header("Scenario Simulation")
 
 cong = st.slider(
@@ -109,9 +112,9 @@ cap = st.slider(
 )
 
 
-# -------------------------------------------------
-# SAMPLE + SCENARIO + ML (ONE PIPELINE)
-# -------------------------------------------------
+# =================================================
+# SAMPLE + SCENARIO + ML
+# =================================================
 st.header("Rule-Based vs ML Evacuation Time")
 
 sample = df.sample(5, random_state=1)
@@ -126,21 +129,32 @@ sample = simulate_scenario(
 # ML prediction
 sample["ml_predicted_time"] = model.predict(sample[features])
 
-comparison = sample[[
-    "route_id",
-    "est_evac_time_min",
-    "ml_predicted_time"
-]]
+st.write(
+    sample[[
+        "route_id",
+        "est_evac_time_min",
+        "ml_predicted_time"
+    ]]
+)
 
-st.write(comparison)
 
-
-# -------------------------------------------------
+# =================================================
 # SAFETY LAYER
-# -------------------------------------------------
+# =================================================
 st.header("Safe Evacuation Decision (ML + Rules)")
 
 safe_df = apply_safety_logic(sample)
+
+failure, failure_reasons = detect_system_failure(safe_df)
+
+if failure:
+    st.error("🛑 No Safe Evacuation Plan Available")
+
+    for r in failure_reasons:
+        st.write(f"• {r}")
+
+    st.info("Immediate human intervention required.")
+    st.stop()
 
 st.write(
     safe_df[[
@@ -154,9 +168,59 @@ st.write(
 )
 
 
-# -------------------------------------------------
+# =================================================
+# SCENARIO COMPARISON
+# =================================================
+st.header("Scenario Comparison: Before vs After")
+
+base_best, stressed_best = compare_scenarios(
+    sample,
+    model,
+    features,
+    cong,
+    cap
+)
+
+col1, col2 = st.columns(2)
+
+with col1:
+    st.subheader("Baseline Conditions")
+    st.write({
+        "Route": base_best["route_id"],
+        "Final Time": base_best["final_evac_time"],
+        "Risk": base_best["risk_flag"],
+        "Confidence": base_best["confidence_score"]
+    })
+
+with col2:
+    st.subheader("Stressed Conditions")
+    st.write({
+        "Route": stressed_best["route_id"],
+        "Final Time": stressed_best["final_evac_time"],
+        "Risk": stressed_best["risk_flag"],
+        "Confidence": stressed_best["confidence_score"]
+    })
+
+
+# =================================================
+# DECISION EXPLANATION
+# =================================================
+st.header("Decision Timeline & Explanation")
+
+reasons = explain_decision_change(base_best, stressed_best)
+
+st.subheader("What Changed & Why")
+
+if reasons:
+    for r in reasons:
+        st.write(f"• {r}")
+else:
+    st.write("• No significant change between scenarios.")
+
+
+# =================================================
 # HUMAN APPROVAL
-# -------------------------------------------------
+# =================================================
 st.header("Human Approval Required")
 
 high_risk = safe_df[safe_df["risk_flag"] == "HIGH"]
@@ -168,9 +232,9 @@ else:
     st.success("✅ All recommendations are within safe confidence limits.")
 
 
-# -------------------------------------------------
-# RECOMMENDED ROUTE
-# -------------------------------------------------
+# =================================================
+# FINAL RECOMMENDATION
+# =================================================
 st.header("Recommended Evacuation Plan")
 
 ranked_routes_df = recommend_routes(safe_df)
@@ -197,9 +261,9 @@ st.write(
 )
 
 
-# -------------------------------------------------
+# =================================================
 # ZONE-LEVEL PLANNING
-# -------------------------------------------------
+# =================================================
 st.header("Zone-Level Evacuation Plan")
 
 zone_plans = generate_zone_plan(safe_df)
@@ -230,9 +294,9 @@ Confidence: {backup['confidence_score']}
         )
 
 
-# -------------------------------------------------
+# =================================================
 # EXECUTIVE SUMMARY
-# -------------------------------------------------
+# =================================================
 st.header("Executive Summary")
 
 st.markdown("""
@@ -244,4 +308,32 @@ st.markdown("""
 • Provides primary and backup routes per zone  
 
 This ensures safe, explainable, and operationally realistic evacuation planning.
+""")
+
+
+# =================================================
+# 1-MINUTE DECISION NARRATIVE
+# =================================================
+st.header("ASTRAGUARD — 1-Minute Decision Narrative")
+
+st.markdown(f"""
+**Situation:**  
+Normal conditions allowed evacuation via **Route {base_best['route_id']}**  
+with acceptable risk and confidence.
+
+**Change:**  
+Under increased congestion or reduced capacity, conditions worsened.
+
+**System Response:**  
+ASTRAGUARD re-evaluated all routes, enforced safety limits,  
+and recommended **Route {stressed_best['route_id']}**  
+with updated risk awareness.
+
+**Outcome:**  
+The system adapted the plan transparently and required human attention  
+where confidence dropped.
+
+**Value:**  
+ASTRAGUARD doesn’t give static answers —  
+it *evolves decisions as reality changes*.
 """)
